@@ -277,7 +277,7 @@ checkpoint <- tf$train$Checkpoint(generator = generator, critic = critic,
                                   critic_optimizer = critic_optimizer)
 status <- checkpoint$restore(tf$train$latest_checkpoint(checkpoint_directory))
 
-for (epoch in seq_len(num_epochs)) {
+for (epoch in (499:num_epochs)) {
   start <- Sys.time()
   total_gp <- 0
   total_loss_crit <- 0
