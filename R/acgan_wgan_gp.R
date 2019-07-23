@@ -14,8 +14,8 @@ tfe_enable_eager_execution(device_policy = "silent", config = config)
 library(tfdatasets)
 
 
-image_height <- 128 # Image height in pixels
-image_width <- 128 # Image width in pixels
+image_height <- 64L # Image height in pixels
+image_width <- 64L # Image width in pixels
 image_channels <- 3 # Number of color channels - here Red, Green and Blue
 z_size <- 100 # Length of gaussian noise vector for generator input
 num_classes <- 3
@@ -27,7 +27,7 @@ adam_beta2 <- 0.9
 
 n_critic <- 5
 
-batch_size <- 20L
+batch_size <- 44L
 
 image_files <- list.files("data/images_small/train_dir", recursive = TRUE, full.names = TRUE)
 num_images <- length(image_files)
@@ -45,6 +45,12 @@ load_an_image <- function(image_file, cats, is_train) {
     if (runif(1) > 0.5) {
       input_image <- tf$image$flip_left_right(input_image)
     }
+    
+    input_image <-
+      tf$image$resize_images(input_image,
+                             c(image_height, image_width),
+                             align_corners = TRUE,
+                             method = 2)
     
   } 
   
@@ -115,11 +121,11 @@ critic <-
           filters = 256, 
           kernel_size = c(5, 5), 
           padding = 'same',
-          strides = c(2, 2)
+          strides = c(1, 1)
         )
       self$flatten <- layer_flatten()
       self$fc_critic <- layer_dense(units = 1)
-      self$fc_classifier <- layer_dense(units = num_classes, activation = "softmax")
+      self$fc_classifier <- layer_dense(units = num_classes) ## don't apply softmax activation, will be taken care of in loss calculation
       
       function(inputs, mask = NULL, training = TRUE) {
         x <- inputs %>% 
@@ -146,7 +152,7 @@ generator <-
     
   keras_model_custom(name = name, function(self) {
     
-    self$fc1 <- layer_dense(units = 64 * image_height / 4 * image_width / 4, use_bias = FALSE)
+    self$fc1 <- layer_dense(units = 128 * image_height / 4 * image_width / 4, use_bias = FALSE)
     self$batchnorm1 <- layer_batch_normalization(momentum = momentum)
     self$leaky_relu1 <- layer_activation_leaky_relu()
     self$upsample1 <- layer_upsampling_2d(size = 2)
@@ -172,7 +178,7 @@ generator <-
     self$conv3 <-
       layer_conv_2d(
         filters = image_channels, 
-        kernel_size = c(7, 7), 
+        kernel_size = c(5, 5), 
         padding = "same",
         activation = "tanh",
         use_bias = FALSE
@@ -194,7 +200,7 @@ generator <-
         self$fc1() %>%
         self$batchnorm1(training = training) %>%
         self$leaky_relu1() %>%
-        k_reshape(shape = c(-1, image_height / 4, image_width / 4, 64)) %>%
+        k_reshape(shape = c(-1, image_height / 4, image_width / 4, 128)) %>%
         self$upsample1() %>%
         self$conv1() %>%
         self$batchnorm2(training = training) %>%
@@ -267,17 +273,56 @@ generate_and_save_images <- function(model, epoch, test_input, folder) {
 }
 
 n_critic <- 5
-folder <- "prot_test"
+folder <- "AC_pretrained"
 num_epochs <- 1000
-checkpoint_directory <- "checkpoints"
-checkpoint_prefix <- file.path(checkpoint_directory, "test_1")
+checkpoint_directory <- "checkpoints_AC_pretrained"
+checkpoint_prefix <- file.path(checkpoint_directory, "AC_pretrained")
 
 checkpoint <- tf$train$Checkpoint(generator = generator, critic = critic,
                                   generator_optimizer = generator_optimizer,
                                   critic_optimizer = critic_optimizer)
 status <- checkpoint$restore(tf$train$latest_checkpoint(checkpoint_directory))
 
-for (epoch in (499:num_epochs)) {
+# pretrain_epochs <- 100
+# 
+# for(pretrain_epoch in (1:pretrain_epochs)) {
+#   start <- Sys.time()
+#   total_ac_loss <- 0
+#   total_ac_acc <- 0
+#   iter <- make_iterator_one_shot(train_dataset)
+#   until_out_of_range({
+#     batch <- iterator_get_next(iter)
+#     with(tf$GradientTape() %as% crit_tape_ac, {
+#       crit_real_output <- critic(batch[[1]], training = TRUE)
+#       crit_ac_loss <- tf$reduce_mean(tf$nn$sparse_softmax_cross_entropy_with_logits(labels = 
+#                                                                                       batch[[2]],
+#                                                                                     logits =
+#                                                                                       crit_real_output[[2]]))
+#     })
+#     gradients_of_critic_ac <-
+#       crit_tape_ac$gradient(crit_ac_loss, critic$variables)
+#     
+#     critic_optimizer$apply_gradients(purrr::transpose(
+#       list(gradients_of_critic_ac, critic$variables)
+#     ))
+#     
+#     #print("Critic!")
+#     
+#     total_ac_loss <- total_ac_loss + crit_ac_loss
+#     
+#   })
+#   
+#   cat("Time for epoch ", pretrain_epoch, ": ", Sys.time() - start, "\n")
+#   cat("AC loss: ", total_ac_loss$numpy() / batches_per_epoch, "\n\n")
+#   
+#   if(pretrain_epoch %% 10 == 0) {
+#     checkpoint$save(file_prefix = checkpoint_prefix)
+#   }
+# }
+
+########## Start GAN training #################
+
+for (epoch in (724:num_epochs)) {
   start <- Sys.time()
   total_gp <- 0
   total_loss_crit <- 0
@@ -308,7 +353,7 @@ for (epoch in (499:num_epochs)) {
           
         })
         crit_tape$watch(averaged_samples)
-        grads <- grad$gradient(averaged_output, averaged_samples)
+        grads <- grad$gradient(averaged_output[[1]], averaged_samples)
         
         
         w_loss <- tf$reduce_mean(crit_generated_output[[1]]) - tf$reduce_mean(crit_real_output[[1]])
@@ -422,8 +467,70 @@ for (epoch in (499:num_epochs)) {
                            list(k_random_normal(c(25L, z_size)), 
                                 tf$random_uniform(c(25L, 1L), dtype = "int32", maxval = 3L)),
                            folder)
-  checkpoint$save(file_prefix = checkpoint_prefix)
+  if(epoch %% 10 == 0) {
+    checkpoint$save(file_prefix = checkpoint_prefix)
+  }
 
 }
 
+##### Explore latent space ##########
 
+checkpoint_directory <- "checkpoints_AC_pretrained"
+checkpoint_prefix <- file.path(checkpoint_directory, "AC_pretrained")
+
+checkpoint <- tf$train$Checkpoint(generator = generator, critic = critic,
+                                  generator_optimizer = generator_optimizer,
+                                  critic_optimizer = critic_optimizer)
+status <- checkpoint$restore(tf$train$latest_checkpoint(checkpoint_directory))
+
+noise <- k_random_normal(c(25, z_size))
+random_labels <- matrix(0L, nrow = 25, ncol = 1)
+random_images <- generator(list(noise, random_labels))
+
+par(mfcol = c(5, 5))
+par(mar = c(0.5, 0.5, 0.5, 0.5),
+    xaxs = 'i',
+    yaxs = 'i')
+for (i in 1:25) {
+  img <- as.array(random_images)[i, , , ]
+  plot(as.raster((img + 1) / 2))
+  title(paste0("image no. = ", i))
+}
+
+save_latents <- as.matrix(noise)[c(2, 22, 3, 12),]
+
+x <- save_latents
+interpolate_points <- function(x, num_interp = 75, loop_back = TRUE) {
+  num_gaps <- nrow(x) - 1
+  intermediates <- list()
+  for (i in seq_len(num_gaps)) {
+    slope = x[i + 1, ] - x[i, ]
+    intermediates[[i]] <- t(x[i, ] + sapply(seq(0, 1, length.out = num_interp), function(x) x * slope))
+  }
+  if(loop_back) {
+    slope = x[1, ] - x[num_gaps + 1, ]
+    intermediates[[num_gaps + 1]] <- t(x[num_gaps + 1, ] + sapply(seq(0, 1, length.out = num_interp), function(x) x * slope))
+  }
+  interpolation <- do.call(rbind, intermediates)
+}
+
+interp_latent <- interpolate_points(save_latents)
+
+image_set <- generator(list(tf$convert_to_tensor(interp_latent, "float32"), matrix(0L, nrow = nrow(interp_latent), ncol = 1)))
+
+par(mfcol = c(5, 5))
+par(mar = c(0.5, 0.5, 0.5, 0.5),
+    xaxs = 'i',
+    yaxs = 'i')
+for (i in 1:25) {
+  img <- as.array(image_set)[i, , , ]
+  plot(as.raster((img + 1) / 2))
+  #title(paste0("image no. = ", i))
+}
+
+library(imager)
+image_array <- aperm(as.array(image_set), c(3, 2, 1, 4))
+test <- as.cimg(image_array)
+play(test, loop = TRUE)
+
+save.video(test, "test.mpeg")
