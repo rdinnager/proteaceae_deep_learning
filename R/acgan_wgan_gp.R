@@ -274,7 +274,7 @@ generate_and_save_images <- function(model, epoch, test_input, folder) {
 
 n_critic <- 5
 folder <- "AC_pretrained"
-num_epochs <- 1000
+num_epochs <- 3000
 checkpoint_directory <- "checkpoints_AC_pretrained"
 checkpoint_prefix <- file.path(checkpoint_directory, "AC_pretrained")
 
@@ -322,7 +322,7 @@ status <- checkpoint$restore(tf$train$latest_checkpoint(checkpoint_directory))
 
 ########## Start GAN training #################
 
-for (epoch in (724:num_epochs)) {
+for (epoch in (1591:num_epochs)) {
   start <- Sys.time()
   total_gp <- 0
   total_loss_crit <- 0
@@ -462,16 +462,27 @@ for (epoch in (724:num_epochs)) {
   cat("Gradient Penalty: ", total_gp$numpy() / batches_per_epoch, "\n")
   cat("Critic loss: ", total_loss_crit$numpy() / batches_per_epoch, "\n")
   cat("AC loss: ", total_ac_loss$numpy() / batches_per_epoch, "\n\n")
-  generate_and_save_images(generator,
-                           epoch,
-                           list(k_random_normal(c(25L, z_size)), 
-                                tf$random_uniform(c(25L, 1L), dtype = "int32", maxval = 3L)),
-                           folder)
-  if(epoch %% 10 == 0) {
+  
+  if(epoch %% 100 == 0) {
     checkpoint$save(file_prefix = checkpoint_prefix)
+    
+  }
+  if(epoch %% 10 == 0) {
+    generate_and_save_images(generator,
+                             epoch,
+                             list(k_random_normal(c(25L, z_size)), 
+                                  tf$random_uniform(c(25L, 1L), dtype = "int32", maxval = 3L)),
+                             folder)
   }
 
 }
+
+save_model_weights_hdf5(generator, "saved_models/generator_1590_epochs_weights.hd5")
+save_model_weights_hdf5(critic, "saved_models/critic_1590_epochs_weights.hd5")
+
+generator2 <- generator
+
+load_model_weights_hdf5(generator, "saved_models/generator_1590_epochs_weights.hd5")
 
 ##### Explore latent space ##########
 
@@ -488,7 +499,7 @@ random_labels <- matrix(0L, nrow = 25, ncol = 1)
 random_images <- generator(list(noise, random_labels))
 
 par(mfcol = c(5, 5))
-par(mar = c(0.5, 0.5, 0.5, 0.5),
+par(mar = c(0, 0, 0, 0),
     xaxs = 'i',
     yaxs = 'i')
 for (i in 1:25) {
@@ -518,19 +529,102 @@ interp_latent <- interpolate_points(save_latents)
 
 image_set <- generator(list(tf$convert_to_tensor(interp_latent, "float32"), matrix(0L, nrow = nrow(interp_latent), ncol = 1)))
 
-par(mfcol = c(5, 5))
-par(mar = c(0.5, 0.5, 0.5, 0.5),
-    xaxs = 'i',
-    yaxs = 'i')
-for (i in 1:25) {
-  img <- as.array(image_set)[i, , , ]
-  plot(as.raster((img + 1) / 2))
-  #title(paste0("image no. = ", i))
-}
-
 library(imager)
 image_array <- aperm(as.array(image_set), c(3, 2, 1, 4))
 test <- as.cimg(image_array)
 play(test, loop = TRUE)
 
 save.video(test, "test.mpeg")
+
+
+noise <- k_random_normal(c(25, z_size))
+random_labels <- matrix(1L, nrow = 25, ncol = 1)
+random_images <- generator(list(noise, random_labels))
+
+par(mfcol = c(5, 5))
+par(mar = c(0.5, 0.5, 0.5, 0.5),
+    xaxs = 'i',
+    yaxs = 'i')
+for (i in 1:25) {
+  img <- as.array(random_images)[i, , , ]
+  plot(as.raster((img + 1) / 2))
+  title(paste0("image no. = ", i))
+}
+
+save_latents <- list()
+save_latents[[1]] <- as.matrix(noise)[24, ]
+save_latents[[2]] <- as.matrix(noise)[14, ]
+save_latents[[3]] <- as.matrix(noise)[23, ]
+save_latents[[4]] <- as.matrix(noise)[13, ]
+save_latents[[5]] <- as.matrix(noise)[6, ]
+save_latents[[6]] <- as.matrix(noise)[9, ]
+save_latents[[7]] <- as.matrix(noise)[22, ]
+save_latents[[8]] <- as.matrix(noise)[1, ]
+
+save_latents_mat <- do.call(rbind, save_latents)
+
+latent_interp <- interpolate_points(save_latents_mat, num_interp = 50)
+
+with(tf$device("cpu:0"), {
+  image_set <- generator(list(tf$convert_to_tensor(latent_interp, "float32"), matrix(0L, nrow = nrow(latent_interp), ncol = 1)))  
+})
+
+image_array <- aperm(as.array(image_set) * 127.5 + 127.5, c(3, 2, 1, 4))
+test <- as.cimg(image_array)
+play(test, loop = TRUE, normalise = FALSE)
+
+save.video(test, "test2.mpeg")
+
+#### Array figure latent interpolation ##############
+
+interpolate_points <- function(x, num_interp = 75, loop_back = TRUE) {
+  num_gaps <- nrow(x) - 1
+  intermediates <- list()
+  for (i in seq_len(num_gaps)) {
+    slope = x[i + 1, ] - x[i, ]
+    intermediates[[i]] <- t(x[i, ] + sapply(seq(0, 1, length.out = num_interp), function(x) x * slope))
+  }
+  if(loop_back) {
+    slope = x[1, ] - x[num_gaps + 1, ]
+    intermediates[[num_gaps + 1]] <- t(x[num_gaps + 1, ] + sapply(seq(0, 1, length.out = num_interp), function(x) x * slope))
+  }
+  interpolation <- do.call(rbind, intermediates)
+}
+
+noise_list <- replicate(9, as.matrix(k_random_normal(c(4, z_size))), simplify = FALSE)
+
+interp_list <- lapply(noise_list, interpolate_points, num_interp = 40)
+
+num_rows <- nrow(interp_list[[1]])
+
+label_list <- list()
+label_list[1:3] <- replicate(3, matrix(2L, nrow = num_rows, ncol = 1), simplify = FALSE)
+label_list[4:6] <- replicate(3, matrix(0L, nrow = num_rows, ncol = 1), simplify = FALSE)
+label_list[7:9] <- replicate(3, matrix(1L, nrow = num_rows, ncol = 1), simplify = FALSE)
+
+library(stringr)
+fold <- "animations/temp_pngs_1"
+## loop through and construct plots
+for(i in 1:num_rows) {
+  noise_mat <- t(sapply(interp_list, function(x) x[i, ]))
+  label_mat <- matrix(sapply(label_list, function(x) x[i, ]), ncol = 1)
+  image_gen <- generator(list(tf$convert_to_tensor(noise_mat, "float32"), label_mat))
+  png(file.path(fold, paste0("image_", str_pad(i, 3, pad = "0"), ".png")), height = 64*3, width = 64*3)
+  par(mfcol = c(3, 3))
+  par(mar = c(0.0, 0.0, 0.0, 0.0),
+      xaxs = 'i',
+      yaxs = 'i')
+  for (j in 1:9) {
+    img <- as.array(image_gen)[j, , , ]
+    plot(as.raster((img + 1) / 2))
+  }
+  dev.off()
+}
+
+library(magick)
+pngs <- image_read(list.files(fold, full.names = TRUE))
+
+animation <- image_animate(pngs, fps = 20)
+#image_write(animation, "animations/proteaceae_animation_2.gif")
+
+image_write_gif(animation, "animations/proteaceae_animation_6.gif", delay = 0.1)
