@@ -8,10 +8,11 @@ use_implementation("tensorflow")
 
 library(tensorflow)
 
-gpu_options <- tf$GPUOptions(allow_growth = TRUE)  # <- one or the other
-config <- tf$ConfigProto(gpu_options = gpu_options)
+#gpu_options <- tf$GPUOptions(allow_growth = TRUE)  # <- one or the other
+#config <- tf$ConfigProto(gpu_options = gpu_options)
 
-tfe_enable_eager_execution(device_policy = "silent", config = config)
+#tfe_enable_eager_execution(device_policy = "silent", config = config)
+tfe_enable_eager_execution(device_policy = "silent")
 
 library(tfdatasets)
 
@@ -77,42 +78,59 @@ train_dataset <- tensor_slices_dataset(image_files2) %>%
   dataset_shuffle(buffer_size) %>%
   dataset_map(function(image) load_an_image(image, TRUE)) %>%
   dataset_batch(batch_size, drop_remainder = TRUE) %>%
-  dataset_prefetch_to_device("/gpu:0")
+  dataset_prefetch(-1)
 
 iter <- make_iterator_one_shot(train_dataset)
 test <- iterator_get_next(iter)
 test
 
-cont_cond_instance_layer_norm <- function(epsilon = 1e-3) {
+
+res_block <- function(filters,
+                     size,
+                     apply_dropout = FALSE,
+                     name = "res_block") {
+  
   keras_model_custom(name = NULL, function(self) {
     
-    self$epsilon <- epsilon
+    self$apply_dropout <- apply_dropout
+    self$conv_1 <- layer_conv_2d(
+      filters = filters,
+      kernel_size = size,
+      strides = 1,
+      padding = "same",
+      kernel_initializer = initializer_he_normal(),
+      use_bias = FALSE
+    )
+    self$conv_2 <- layer_conv_2d(
+      filters = filters,
+      kernel_size = size,
+      strides = 1,
+      padding = "same",
+      kernel_initializer = initializer_he_normal(),
+      use_bias = FALSE
+    )
+    self$condinstancenorm <- layer_instance_norm_plus_params_as_input()
     
-    function(inputs, mask = NULL, training = TRUE) {
-      
-      c(images, beta, gamma) %<-% inputs
-      m <- k_mean(images, c(2, 3), keepdims = TRUE)
-      s <- k_std(images, c(2, 3), keepdims = TRUE) + self$epsilon
-      
-      normed <- (images - m) / s  
-      normed <- (gamma * normed) + beta
-      normed
-      
+    if (self$apply_dropout) {
+      self$dropout <- layer_dropout(rate = 0.5)
     }
     
+    function(xs, mask = NULL, training = TRUE) {
+      
+      c(images, sigmas) %<-% xs
+      x <- self$up_conv(x1) %>% self$condinstancenorm(training = training)
+      if (self$apply_dropout) {
+        x %>% self$dropout(training = training)
+      }
+      x %>% layer_activation("relu")
+      concat <- k_concatenate(list(x, x2))
+      concat
+    }
   })
 }
 
-# def SubpixelConv2D(*args, **kwargs):
-#   kwargs['output_dim'] = 4*kwargs['output_dim']
-# output = lib.ops.conv2d.Conv2D(*args, **kwargs)
-# output = tf.transpose(output, [0,2,3,1])
-# output = tf.depth_to_space(output, 2)
-# output = tf.transpose(output, [0,3,1,2])
-# return output
 
-test_cond <- cont_cond_instance_layer_norm()
-test_cond(list(test, 1, 2.3))
+
 
 upsample <- function(filters,
                      size,
